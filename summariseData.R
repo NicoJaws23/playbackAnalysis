@@ -15,4 +15,4 @@ response <- df3 |>
   summarise(count = n())
 
 ggplot(response, mapping = aes(x = ResponseType, y = count)) +
-  geom_boxplot()
+  geom_point()
