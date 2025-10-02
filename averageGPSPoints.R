@@ -35,15 +35,10 @@ Tracks<-read.csv(file.choose(), header = TRUE, sep = ",", as.is = T)
 head(Tracks)
 names(Tracks)
 
-Tracks15<-filter(Tracks, X15MIN == "TRUE" | X14MIN == "TRUE" | X29MIN == "TRUE" | X44MIN == "TRUE" | X59MIN == "TRUE")
-head(Tracks15)
 
-class(Tracks15$ltimeRounded)
-
-
-realtime<-as.POSIXct(Tracks15$ltimeRounded,format="%m/%d/%y %H:%M")
+realtime<-as.POSIXct(Tracks$ltimeRounded,format="%m/%d/%y %H:%M")
 realtime
-Tracks15Time<-cbind(Tracks15, realtime)
+Tracks-cbind(Tracks, realtime)
 head(Tracks15Time)
 
 
@@ -67,15 +62,26 @@ library(lubridate)
 library(tidyverse)
 library(leaflet)
 library(geosphere)
+library(sf)
 
 track_files <- list.files("C:\\Users\\Jawor\\Desktop\\R_repos\\playbackAnalysis\\2025Avistaje", pattern = "\\.csv$", full.names = TRUE)
 data <- lapply(track_files, read.table, sep=",", header=TRUE)
 combined.data <- do.call(rbind, data)
 combined.data$file_origin <- row.names(combined.data)
+names(combined.data)
 combined.data <- combined.data |>
-  mutate(time = ymd_hms(time))
+  mutate(time = ymd_hms(time)) |>
+  select(tident, ident, Latitude, Longitude, altitude, time, ltime, file_origin)
 
-time_seq <- seq(floor_date(min(combined.data$time), "15 minutes"), ceiling_date(max(combined.data$time), "15 minutes"), by = "15 mins")
+sf_points_ll <- st_as_sf(combined.data, coords = c("Longitude", "Latitude"), crs = 4326)
+sf_points_utm <- st_transform(sf_points_ll, crs = 32718)
+utmData <- sf_points_utm |>
+  st_coordinates() |>
+  as.data.frame() |>
+  cbind(sf_points_utm) |>
+  with_tz(time, tzone = "America/Chicago")
+
+time_seq <- seq(floor_date(min(utmData$time), "15 minutes"), ceiling_date(max(utmData$time), "15 minutes"), by = "15 mins")
 
 avg_window <- function(target_time, data, window = 2) {
   subset <- data |>
@@ -85,40 +91,69 @@ avg_window <- function(target_time, data, window = 2) {
   if (nrow(subset) > 0) {
     tibble(
       target_time = target_time,
-      mean_lat = mean(subset$Latitude, na.rm = TRUE),
-      mean_lon = mean(subset$Longitude, na.rm = TRUE),
+      mean_yProj = mean(subset$Y, na.rm = TRUE),
+      mean_xProj = mean(subset$X, na.rm = TRUE),
       n_points = nrow(subset)
     )
   } else {
     tibble(
       target_time = target_time,
-      mean_lat = NA_real_,
-      mean_lon = NA_real_,
+      mean_yProj = NA_real_,
+      mean_xProj = NA_real_,
       n_points = 0
     )
   }
 }
 
-avgPoints <- bind_rows(lapply(time_seq, avg_window, data = combined.data))
+avgPoints <- bind_rows(lapply(time_seq, avg_window, data = utmData))
 
 avgPoints <- avgPoints |>
-  filter(!is.na(mean_lat), !is.na(mean_lon))
+  filter(!is.na(mean_yProj), !is.na(mean_xProj))
+names(avgPoints)
+
+a1 <- st_as_sf(avgPoints, coords = c("mean_xProj", "mean_yProj"), crs = 32718, na.fail = FALSE)
+b1 <- st_transform(a1, 4326)
+c1 <- st_coordinates(b1)
+avgPoints$lon <- c1[,1]
+avgPoints$lat <- c1[,2]
+plot(PButmData$X, PButmData$Y)
+
+
+
 
 write.csv(avgPoints, file = "C:/Users/Jawor/Desktop/R_repos/playbackAnalysis/avgPoints.csv",row.names=TRUE,col.names=TRUE,sep=",")
 
-avgPoints2 <- avgPoints |>
+avgPoints <- avgPoints |>
   mutate(date = as.Date(target_time), time = format(target_time, format = "%H:%M:%S"))
 
 
 
 pbPoints <- read.csv(file.choose(), header = TRUE)
-pbPointsFilt <- pbPoints |>
-  filter(symbol == "Flag")
 
-playbacks <- pbPointsFilt |>
-  mutate(dateTime = ymd_hms(wpt_class, tz = "UTC"), date = as.Date(dateTime), time = format(dateTime, format = "%H:%M:%S"))
+PB_points_ll <- st_as_sf(pbPoints, coords = c("Longitude", "Latitude"), crs = 4326, na.fail = FALSE)
+PB_points_utm <- st_transform(PB_points_ll, crs = 32718)
 
-playback_matches <- playbacks %>%
+PButmData <- PB_points_utm |>
+  st_coordinates() |>
+  as.data.frame() |>
+  cbind(PB_points_utm) |>
+  mutate(Time = paste0(Time, ":00"), Time = hms::as_hms(Time))
+
+#Add latlon to PButmData
+
+
+a <- st_as_sf(PButmData, coords = c("X", "Y"), crs = 32718, na.fail = FALSE)
+b <- st_transform(a, 4326)
+c <- st_coordinates(b)
+PButmData$lon <- c[,1]
+PButmData$lat <- c[,2]
+
+PButmData <- PButmData |>
+  filter(!is.nan(lon) & !is.nan(lat))
+
+plot(PButmData$X, PButmData$Y)
+
+playback_matches <- %>%
   rowwise() %>%
   mutate(
     match = list({
@@ -147,9 +182,9 @@ names(playback_matches)
 
 leaflet() |>
   addTiles() |>
-  addPolylines(data = avgPoints2, lng = ~mean_lon, lat = ~mean_lat, color = "blue") |>
-  addCircleMarkers(data = avgPoints2, lng = ~mean_lon, lat = ~mean_lat, radius = 3, color = "red", popup = ~paste0("Time: ", target_time)) |>
-  addCircleMarkers(data = playback_matches, lng = ~Longitude, lat = ~Latitude, radius = 5, color = "green", fillColor = "yellow", fillOpacity = 0.8, weight = 2, popup = ~paste0(ident))
+  addPolylines(data = avgPoints, lng = ~lon, lat = ~lat, color = "blue") |>
+  addCircleMarkers(data = avgPoints, lng = ~lon, lat = ~lat, radius = 3, color = "red", popup = ~paste0("Time: ", target_time)) |>
+  addCircleMarkers(data = PButmData, lng = ~lon, lat = ~lat, radius = 5, color = "green", fillColor = "yellow", fillOpacity = 0.8, weight = 2, popup = ~paste0(Playback_Number))
 
 leaflet(pbPointsFilt) |>
   addTiles() |>
